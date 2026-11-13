@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Phantom Weight Finder — free Google Sheet</title><style>*{box-sizing:border-box}body{margin:0;background:#f6f3ee;color:#1f2328;font:17px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+main{max-width:860px;margin:0 auto;padding:40px 20px 80px}h1{font-size:34px;line-height:1.15;margin:0 0 6px}h2{font-size:21px;margin:34px 0 8px}
+.kicker{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#7a4b1e;font-weight:700}.lead{font-size:19px;color:#3b3f45}
+.card{background:#fff;border:1px solid #e3ddd3;border-radius:10px;padding:18px 20px;margin:14px 0}ol li,ul li{margin:6px 0}
+code{background:#efe9df;padding:1px 5px;border-radius:4px;font-size:15px}pre{background:#1d2a2f;color:#e8efe9;padding:16px;border-radius:10px;overflow:auto;max-height:440px;font-size:13px;line-height:1.45}
+.btn{display:inline-block;background:#2f5d50;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:15px;font-weight:600;text-decoration:none;cursor:pointer;margin:4px 8px 4px 0}
+.btn.alt{background:#7a4b1e}.warn{border-left:5px solid #b3261e}.rule td{padding:4px 10px 4px 0;vertical-align:top}small{color:#5b6168}</style></head><body><main>
+<div class="kicker">Build It With AI · Episode 28 · free download</div>
+<h1>The Phantom Weight Finder</h1>
+<p class="lead">A Google Sheet that reads your own USPS package log, works out what each box is billed at under the rule in force since July 12, 2026, and flags every pound you pay for that the scale never saw — priced from your own rate card.</p>
+<p><a class="btn" href="Phantom_Weight_Finder_BUNDLE.zip">Download the whole kit (zip)</a><a class="btn alt" href="prompts.html">The three prompts</a><a class="btn alt" href="README.txt">README</a></p>
+<div class="card"><b>The rule it applies</b> (USPS Postal Bulletin 22705, effective July 12, 2026)
+<ul><li>Each side rounds <b>up</b> to the next whole inch — 12.25 becomes 13.</li>
+<li>If length × width × height is <b>more than 1,728</b> cubic inches, divide by <b>139</b> and round up to the pound.</li>
+<li>The real weight rounds up too. You are billed the bigger number.</li>
+<li>Priority Mail Express, Priority Mail, Ground Advantage, Parcel Select. Cubic-priced services are set aside, not checked.</li></ul></div>
+<h2>Set it up in about five minutes</h2>
+<ol><li>New Google Sheet with tabs named <code>Packages</code> (Order, Service, Length, Width, Height, Weight), <code>Boxes</code> (Box, Length, Width, Height) and <code>Rates</code> (Service, Pounds, Price). Optional <code>Settings</code> (Setting, Value). Headers on row 1, any order.</li>
+<li>To try it first: <b>File → Import</b> the three sample CSVs from the zip into those tabs.</li>
+<li><b>Extensions → Apps Script</b>, delete what is there, paste the code below, save.</li>
+<li>Reload the sheet. Use <b>Phantom Weight → Find phantom weight</b>. It writes a tab called <code>Phantom Weight</code>.</li></ol>
+<div class="card warn">If the report's first line says <b>DO NOT TRUST THESE WEIGHTS</b>, believe it — a header row was unreadable, the counts didn't add up, the money didn't re-add, more than 10% of rows were refused, or the rate card had nothing usable. The reason is printed beside it.</div>
+<h2>The code (phantom.gs)</h2>
+<p><button class="btn" id="copy">Copy the code</button><small id="ok"></small></p>
+<pre id="code">/* ============================================================================
+   THE PHANTOM WEIGHT FINDER — Build It With AI, Episode 28 (free giveaway)
+   Google Sheets + Apps Script. It reads your own package log; it buys nothing, sends nothing.
+
+   Tabs it reads (row 1 = headers, any order, extra columns ignored):
+     Packages : Order | Service | Length | Width | Height | Weight   (inches, pounds)
+     Boxes    : Box | Length | Width | Height                       (your own box sizes)
+     Rates    : Service | Pounds | Price                            (your own rate card, one zone)
+     Settings : optional — divisor (139), threshold (1728)
+
+   The rule it applies (USPS Postal Bulletin 22705, effective July 12, 2026): round each side UP
+   to the whole inch; if length x width x height is more than 1,728 cubic inches, the package is
+   billed at volume / 139, rounded up to the pound, whenever that beats its real weight (also
+   rounded up). Priority Mail Express, Priority Mail, Ground Advantage, Parcel Select. Cubic-priced
+   services use a different system and are set aside, not checked.
+   Not shipping or tax advice; check your own carrier invoices.
+   ============================================================================ */
+
+/* EP28 — The Phantom Weight Finder — shipped engine core (pure; no I/O, no network). Follows SPEC.md exactly. */
+var PHANTOM = (function () {
+  var IN_SCOPE = { &quot;priority mail express&quot;: 1, &quot;priority mail&quot;: 1, &quot;ground advantage&quot;: 1, &quot;parcel select&quot;: 1 };
+  var CUBIC = { &quot;priority mail cubic&quot;: 1, &quot;ground advantage cubic&quot;: 1 };
+  var NEED = {
+    packages: [&quot;order&quot;, &quot;service&quot;, &quot;length&quot;, &quot;width&quot;, &quot;height&quot;, &quot;weight&quot;],
+    boxes: [&quot;box&quot;, &quot;length&quot;, &quot;width&quot;, &quot;height&quot;],
+    rates: [&quot;service&quot;, &quot;pounds&quot;, &quot;price&quot;]
+  };
+
+  function norm(s) { return String(s == null ? &quot;&quot; : s).replace(/\s+/g, &quot; &quot;).trim(); }
+  function fold(s) { return norm(s).toLowerCase(); }
+  function hundredths(s) {               // &quot;12.25&quot; -&gt; 1225 ; null if unreadable
+    var t = norm(s);
+    if (!/^\d+(\.\d{1,2})?$/.test(t)) return null;
+    var p = t.split(&quot;.&quot;);
+    return parseInt(p[0], 10) * 100 + (p[1] ? parseInt((p[1] + &quot;0&quot;).slice(0, 2), 10) : 0);
+  }
+  function cents(s) {
+    var t = norm(s).replace(/^\$/, &quot;&quot;);
+    if (!/^\d+(\.\d{1,2})?$/.test(t)) return null;
+    var p = t.split(&quot;.&quot;);
+    return parseInt(p[0], 10) * 100 + (p[1] ? parseInt((p[1] + &quot;0&quot;).slice(0, 2), 10) : 0);
+  }
+  function ceilH(h) { return Math.floor((h + 99) / 100); }      // hundredths -&gt; whole units, rounded UP
+  function money(c) { var s = (c / 100).toFixed(2); return &quot;$&quot; + s.replace(/\B(?=(\d{3})+(?!\d))/g, &quot;,&quot;); }
+
+  function headerMap(rows, need) {
+    if (!rows || !rows.length) return null;
+    var h = rows[0].map(fold), m = {};
+    for (var i = 0; i &lt; need.length; i++) { var k = h.indexOf(need[i]); if (k &lt; 0) return null; m[need[i]] = k; }
+    return m;
+  }
+  function blank(row, idx) {
+    for (var k in idx) { if (norm(row[idx[k]]) !== &quot;&quot;) return false; }
+    return true;
+  }
+  function dimOf(vol, divisor, threshold) { return vol &gt; threshold ? Math.ceil(vol / divisor) : 0; }
+
+  function readSettings(rows) {
+    var st = { divisor: 139, threshold: 1728, notes: [] };
+    if (!rows || rows.length &lt; 2) return st;
+    for (var i = 1; i &lt; rows.length; i++) {
+      var k = fold(rows[i][0]), v = norm(rows[i][1]);
+      if (k !== &quot;divisor&quot; &amp;&amp; k !== &quot;threshold&quot;) continue;
+      var n = /^\d+$/.test(v) ? parseInt(v, 10) : null;
+      if (k === &quot;divisor&quot;) { if (n != null &amp;&amp; n &gt;= 100 &amp;&amp; n &lt;= 300) st.divisor = n; else st.notes.push(&quot;divisor unreadable — using 139&quot;); }
+      if (k === &quot;threshold&quot;) { if (n != null &amp;&amp; n &gt;= 0 &amp;&amp; n &lt;= 20000) st.threshold = n; else st.notes.push(&quot;threshold unreadable — using 1728&quot;); }
+    }
+    return st;
+  }
+
+  function run(pkgRows, boxRows, rateRows, setRows) {
+    var st = readSettings(setRows);
+    var D = st.divisor, T = st.threshold;
+    var headerFail = [];
+    // ---- rates ----
+    var rates = {}, rateRefusals = [], usableRates = 0;
+    var rm = headerMap(rateRows, NEED.rates);
+    if (!rm) headerFail.push(&quot;Rates&quot;);
+    else for (var r = 1; r &lt; rateRows.length; r++) {
+      var row = rateRows[r]; if (blank(row, rm)) continue;
+      var sv = fold(row[rm.service]), lbS = norm(row[rm.pounds]), pc = cents(row[rm.price]);
+      var lb = /^\d+$/.test(lbS) ? parseInt(lbS, 10) : null;
+      if (!IN_SCOPE[sv]) { rateRefusals.push({ row: r + 1, reason: &quot;unknown service: &quot; + norm(row[rm.service]) }); continue; }
+      if (lb == null || lb &lt; 1 || lb &gt; 70) { rateRefusals.push({ row: r + 1, reason: &quot;pounds must be a whole number 1–70&quot; }); continue; }
+      if (pc == null) { rateRefusals.push({ row: r + 1, reason: &quot;unreadable price&quot; }); continue; }
+      var key = sv + &quot;|&quot; + lb;
+      if (rates.hasOwnProperty(key)) { rateRefusals.push({ row: r + 1, reason: &quot;duplicate rate — the first was kept&quot; }); continue; }
+      rates[key] = pc; usableRates++;
+    }
+    // ---- boxes ----
+    var boxes = [], boxRefusals = [];
+    var bm = headerMap(boxRows, NEED.boxes);
+    if (!bm) headerFail.push(&quot;Boxes&quot;);
+    else for (var b = 1; b &lt; boxRows.length; b++) {
+      var br = boxRows[b]; if (blank(br, bm)) continue;
+      var name = norm(br[bm.box]);
+      var bl = hundredths(br[bm.length]), bw = hundredths(br[bm.width]), bh = hundredths(br[bm.height]);
+      if (!name) { boxRefusals.push({ row: b + 1, reason: &quot;no box name&quot; }); continue; }
+      if (bl == null || bw == null || bh == null || bl &lt;= 0 || bw &lt;= 0 || bh &lt;= 0) { boxRefusals.push({ row: b + 1, reason: &quot;unreadable size&quot; }); continue; }
+      var sides = [ceilH(bl), ceilH(bw), ceilH(bh)], vol = sides[0] * sides[1] * sides[2];
+      boxes.push({ name: name, sides: sides, volume: vol, dim: dimOf(vol, D, T), order: boxes.length });
+    }
+    // ---- packages ----
+    var pm = headerMap(pkgRows, NEED.packages);
+    var rowsIn = 0, checked = [], excluded = [], refused = [];
+    if (!pm) {
+      headerFail.push(&quot;Packages&quot;);
+      for (var q = 1; q &lt; (pkgRows ? pkgRows.length : 0); q++) {
+        if (pkgRows[q].every(function (c) { return norm(c) === &quot;&quot;; })) continue;
+        rowsIn++; refused.push({ row: q + 1, order: &quot;&quot;, reason: &quot;Packages header row unreadable&quot; });
+      }
+    } else {
+      var seen = {};
+      for (var i = 1; i &lt; pkgRows.length; i++) {
+        var p = pkgRows[i]; if (blank(p, pm)) continue;
+        rowsIn++;
+        var ord = norm(p[pm.order]), rn = i + 1;
+        if (!ord) { refused.push({ row: rn, order: &quot;&quot;, reason: &quot;no order id&quot; }); continue; }
+        if (seen[fold(ord)]) { refused.push({ row: rn, order: ord, reason: &quot;duplicate order — the first row was kept&quot; }); continue; }
+        seen[fold(ord)] = 1;
+        var svc = fold(p[pm.service]);
+        if (CUBIC[svc]) { excluded.push({ row: rn, order: ord, reason: &quot;cubic-priced: priced by cubic tier, not this rule&quot; }); continue; }
+        if (!IN_SCOPE[svc]) { refused.push({ row: rn, order: ord, reason: &quot;unknown service: &quot; + norm(p[pm.service]) }); continue; }
+        var l = hundredths(p[pm.length]), w = hundredths(p[pm.width]), h = hundredths(p[pm.height]);
+        if (l == null || w == null || h == null || l &lt;= 0 || w &lt;= 0 || h &lt;= 0) { refused.push({ row: rn, order: ord, reason: &quot;unreadable size&quot; }); continue; }
+        if (l &gt; 10800 || w &gt; 10800 || h &gt; 10800) { refused.push({ row: rn, order: ord, reason: &quot;a side over 108 inches&quot; }); continue; }
+        var wt = hundredths(p[pm.weight]);
+        if (wt == null || wt &lt;= 0) { refused.push({ row: rn, order: ord, reason: &quot;unreadable weight&quot; }); continue; }
+        if (wt &gt; 7000) { refused.push({ row: rn, order: ord, reason: &quot;over 70 lb&quot; }); continue; }
+        var s3 = [ceilH(l), ceilH(w), ceilH(h)], v = s3[0] * s3[1] * s3[2];
+        var dim = dimOf(v, D, T), act = ceilH(wt), bill = Math.max(act, dim), ph = bill - act;
+        var rec = { row: rn, order: ord, service: norm(p[pm.service]), sides: s3, volume: v, dim: dim, actual: act,
+                    billable: bill, phantom: ph, extraCents: 0, priced: true, note: &quot;&quot;, suggestion: &quot;&quot; };
+        if (ph &gt; 0) {
+          var kb = svc + &quot;|&quot; + bill, ka = svc + &quot;|&quot; + act;
+          if (rates.hasOwnProperty(kb) &amp;&amp; rates.hasOwnProperty(ka)) rec.extraCents = rates[kb] - rates[ka];
+          else { rec.priced = false; rec.note = &quot;no rate for &quot; + (rates.hasOwnProperty(kb) ? act : bill) + &quot; lb&quot;; }
+          var best = null;
+          for (var k = 0; k &lt; boxes.length; k++) {
+            var bx = boxes[k];
+            if (bx.volume &gt;= v) continue;
+            if (Math.max(act, bx.dim) !== act) continue;
+            if (!best || bx.volume &gt; best.volume) best = bx;
+          }
+          rec.suggestion = best ? best.name : &quot;none in your list&quot;;
+        }
+        checked.push(rec);
+      }
+    }
+    var phantomRows = checked.filter(function (c) { return c.phantom &gt; 0; });
+    var extra = 0, phantomLb = 0, unpriced = 0;
+    phantomRows.forEach(function (c) { phantomLb += c.phantom; if (c.priced) extra += c.extraCents; else unpriced++; });
+    var readd = 0; checked.forEach(function (c) { readd += c.extraCents; });
+    var worst = null;
+    phantomRows.forEach(function (c) {
+      if (!worst || c.extraCents &gt; worst.extraCents || (c.extraCents === worst.extraCents &amp;&amp; c.phantom &gt; worst.phantom)) worst = c;
+    });
+    var reconOK = rowsIn === checked.length + excluded.length + refused.length;
+    var readdOK = readd === extra;
+    var refShare = rowsIn ? refused.length / rowsIn : 0;
+    var reasons = [];
+    if (headerFail.length) reasons.push(&quot;header row unreadable: &quot; + headerFail.join(&quot;, &quot;));
+    if (!reconOK) reasons.push(&quot;rows do not add up&quot;);
+    if (!readdOK) reasons.push(&quot;money does not re-add&quot;);
+    if (refShare &gt; 0.10) reasons.push(&quot;more than 10% of rows refused&quot;);
+    if (rm &amp;&amp; usableRates === 0) reasons.push(&quot;no usable rates&quot;);
+    return {
+      settings: { divisor: D, threshold: T, notes: st.notes },
+      rows: checked,
+      phantom: phantomRows.slice().sort(function (a, b2) { return b2.extraCents - a.extraCents || b2.phantom - a.phantom || a.row - b2.row; }),
+      boxes: boxes,
+      excluded: excluded, refused: refused, rateRefusals: rateRefusals, boxRefusals: boxRefusals,
+      totals: { rowsIn: rowsIn, checked: checked.length, phantomCount: phantomRows.length, phantomLb: phantomLb,
+                extraCents: extra, unpriced: unpriced, excluded: excluded.length, refused: refused.length, usableRates: usableRates },
+      worst: worst,
+      recon: { ok: reconOK, readdOK: readdOK },
+      trust: reasons.length ? &quot;DO NOT TRUST THESE WEIGHTS&quot; : &quot;OK&quot;,
+      trustReasons: reasons,
+      money: money
+    };
+  }
+  return { run: run, money: money, hundredths: hundredths, fold: fold };
+})();
+
+/* ---------------- the Sheets side: menu, read the tabs, write the report ---------------- */
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu(&quot;Phantom Weight&quot;).addItem(&quot;Find phantom weight&quot;, &quot;findPhantomWeight&quot;).addToUi();
+}
+
+function tabValues_(ss, name) {
+  var sh = ss.getSheetByName(name);
+  if (!sh) return null;
+  return sh.getDataRange().getDisplayValues();
+}
+
+function findPhantomWeight() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var R = PHANTOM.run(tabValues_(ss, &quot;Packages&quot;), tabValues_(ss, &quot;Boxes&quot;), tabValues_(ss, &quot;Rates&quot;), tabValues_(ss, &quot;Settings&quot;));
+  var M = PHANTOM.money, T = R.totals, out = [];
+  out.push([R.trust, R.trust === &quot;OK&quot; ? &quot;every count below re-adds&quot; : R.trustReasons.join(&quot; · &quot;), &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;]);
+  out.push([&quot;USPS rule since July 12, 2026: each side rounded UP to the inch; over &quot; + R.settings.threshold +
+            &quot; cubic inches, billed at volume ÷ &quot; + R.settings.divisor + &quot; (rounded up) when that beats the real weight&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;]);
+  if (R.settings.notes.length) out.push([&quot;Settings: &quot; + R.settings.notes.join(&quot; · &quot;), &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;]);
+  out.push([&quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;]);
+  out.push([&quot;PHANTOM WEIGHT&quot;, T.phantomCount + &quot; of &quot; + T.checked + &quot; packages&quot;, T.phantomLb + &quot; lb billed that the scale never saw&quot;,
+            M(T.extraCents) + &quot; extra on your rate card&quot;, T.unpriced ? T.unpriced + &quot; not priced (no rate on your card)&quot; : &quot;&quot;, &quot;&quot;]);
+  if (R.worst) out.push([&quot;Worst package&quot;, R.worst.order, R.worst.actual + &quot; lb billed as &quot; + R.worst.billable + &quot; lb&quot;, R.worst.priced ? &quot;+&quot; + M(R.worst.extraCents) : R.worst.note, &quot;box &quot; + R.worst.sides.join(&quot; x &quot;), &quot;&quot;]);
+  out.push([&quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;]);
+  out.push([&quot;Order&quot;, &quot;Service&quot;, &quot;Box (rounded)&quot;, &quot;Real lb → billed lb&quot;, &quot;Extra&quot;, &quot;A box from your list that avoids it&quot;]);
+  R.phantom.forEach(function (c) {
+    out.push([c.order, c.service, c.sides.join(&quot; x &quot;) + &quot; = &quot; + c.volume + &quot; cu in&quot;, c.actual + &quot; → &quot; + c.billable,
+              c.priced ? M(c.extraCents) : c.note, c.suggestion]);
+  });
+  out.push([&quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;]);
+  out.push([&quot;YOUR BOXES&quot;, &quot;Rounded&quot;, &quot;Cubic inches&quot;, &quot;Billed at least&quot;, &quot;&quot;, &quot;&quot;]);
+  R.boxes.forEach(function (b) {
+    out.push([b.name, b.sides.join(&quot; x &quot;), b.volume, b.dim ? b.dim + &quot; lb (DIM)&quot; : &quot;its real weight&quot;, &quot;&quot;, &quot;&quot;]);
+  });
+  out.push([&quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;, &quot;&quot;]);
+  out.push([&quot;COUNT IN PUBLIC&quot;, &quot;packages in &quot; + T.rowsIn, &quot;checked &quot; + T.checked, &quot;set aside &quot; + T.excluded, &quot;refused &quot; + T.refused,
+            R.recon.ok ? &quot;adds up&quot; : &quot;DOES NOT ADD UP&quot;]);
+  R.excluded.forEach(function (e) { out.push([&quot;row &quot; + e.row, e.order, &quot;set aside: &quot; + e.reason, &quot;&quot;, &quot;&quot;, &quot;&quot;]); });
+  R.refused.forEach(function (e) { out.push([&quot;row &quot; + e.row, e.order, &quot;refused: &quot; + e.reason, &quot;&quot;, &quot;&quot;, &quot;&quot;]); });
+  R.rateRefusals.forEach(function (e) { out.push([&quot;Rates row &quot; + e.row, &quot;&quot;, &quot;refused: &quot; + e.reason, &quot;&quot;, &quot;&quot;, &quot;&quot;]); });
+  R.boxRefusals.forEach(function (e) { out.push([&quot;Boxes row &quot; + e.row, &quot;&quot;, &quot;refused: &quot; + e.reason, &quot;&quot;, &quot;&quot;, &quot;&quot;]); });
+  var rep = ss.getSheetByName(&quot;Phantom Weight&quot;) || ss.insertSheet(&quot;Phantom Weight&quot;);
+  rep.clearContents();
+  rep.getRange(1, 1, out.length, 6).setValues(out);
+  rep.getRange(1, 1, 1, 6).setFontWeight(&quot;bold&quot;).setBackground(R.trust === &quot;OK&quot; ? &quot;#e6f2ea&quot; : &quot;#b3261e&quot;).setFontColor(R.trust === &quot;OK&quot; ? &quot;#1d4d2b&quot; : &quot;#ffffff&quot;);
+  return R;
+}
+</pre>
+<h2>What it leaves out</h2>
+<p>It knows this one USPS rule, not other carriers'. It doesn't check cubic pricing or know your zones — the money is only as good as the rate card you paste. Its box suggestion is the largest of your own boxes that is smaller than the one you used and wouldn't be billed above that package's weight; it can't know whether your product fits. The sample shop, Hollow Pine Candle Company, and its rate card are made up. Not shipping or accounting advice.</p>
+<p><small>Tested: an independent Python checker, written from the rules alone, matched the sheet on 55,366 fields across 209 runs with zero disagreements; 55 functional checks on the Apps Script. Both earlier, wrong builds are in the zip, labeled NOT THE TOOL.</small></p>
+</main><script>
+document.getElementById("copy").addEventListener("click",function(){var t=document.getElementById("code").textContent;
+if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){document.getElementById("ok").textContent=" copied"})}
+else{var r=document.createRange();r.selectNodeContents(document.getElementById("code"));var s=getSelection();s.removeAllRanges();s.addRange(r);document.execCommand("copy");document.getElementById("ok").textContent=" copied"}});
+</script></body></html>

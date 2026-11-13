@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Phantom Weight Finder — the three prompts</title><style>*{box-sizing:border-box}body{margin:0;background:#f6f3ee;color:#1f2328;font:17px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+main{max-width:860px;margin:0 auto;padding:40px 20px 80px}h1{font-size:34px;line-height:1.15;margin:0 0 6px}h2{font-size:21px;margin:34px 0 8px}
+.kicker{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:#7a4b1e;font-weight:700}.lead{font-size:19px;color:#3b3f45}
+.card{background:#fff;border:1px solid #e3ddd3;border-radius:10px;padding:18px 20px;margin:14px 0}ol li,ul li{margin:6px 0}
+code{background:#efe9df;padding:1px 5px;border-radius:4px;font-size:15px}pre{background:#1d2a2f;color:#e8efe9;padding:16px;border-radius:10px;overflow:auto;max-height:440px;font-size:13px;line-height:1.45}
+.btn{display:inline-block;background:#2f5d50;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:15px;font-weight:600;text-decoration:none;cursor:pointer;margin:4px 8px 4px 0}
+.btn.alt{background:#7a4b1e}.warn{border-left:5px solid #b3261e}.rule td{padding:4px 10px 4px 0;vertical-align:top}small{color:#5b6168} pre{white-space:pre-wrap;max-height:none;background:#fff;color:#1f2328;border:1px solid #e3ddd3}</style></head><body><main>
+<div class="kicker">Build It With AI · Episode 28</div><h1>The three prompts, word for word</h1>
+<p><a class="btn alt" href="./">Back to the Phantom Weight Finder</a></p>
+<pre>THE PHANTOM WEIGHT FINDER — the three prompts, word for word, in the order they were sent
+(Build It With AI, Episode 28. The answers to prompts 1 and 2 are in the bundle as
+phantom_v1_FIRST_BUILD_NOT_THE_TOOL.gs and phantom_v2_SECOND_BUILD_NOT_THE_TOOL.gs.)
+
+---------------------------------------------------------------- PROMPT 1
+I ship candles through USPS from a Google Sheet. One tab, Packages, has Order, Service,
+Length, Width, Height (inches) and Weight (pounds) for every package. Another tab, Rates, is my
+own rate card: Service, Pounds, Price. Write me an Apps Script with a menu that works out the
+dimensional weight of each package, tells me which ones are being billed for more than they
+weigh, and how much extra that costs me on my rate card.
+
+---------------------------------------------------------------- PROMPT 2
+That version disagrees with USPS. Here is the rule, from Postal Bulletin 22705, in force since
+July 12, 2026. Rebuild it to follow this exactly:
+- Round each side UP to the next whole inch before anything else. An exact whole number stays.
+- Multiply the three rounded sides. If the result is MORE than 1,728 cubic inches, divide it by
+  139 and round up to the next whole pound. That is the dimensional weight. At 1,728 or less
+  there is no dimensional weight.
+- Round the real weight up to the next whole pound too. USPS bills the bigger of the two.
+- It applies to Priority Mail Express, Priority Mail, Ground Advantage and Parcel Select. The
+  cubic-priced services use their own tiers: set those aside and say so.
+- Refuse any row you cannot read, with its row number and the reason. Never guess a size.
+- Price the difference from my Rates tab only. If a weight is missing from my card, say so.
+- Add a Boxes tab with my box sizes and tell me which of my boxes trigger dimensional weight.
+Then I&#x27;ll check every number against a separate checker written from these rules.
+
+---------------------------------------------------------------- PROMPT 3
+The checker disagreed with you on 23 packages. Fix the three causes: round each side, not the
+volume; &quot;more than 1,728&quot; means a 12-inch cube is NOT dimensional; and the cubic services are set
+aside, not priced by this rule. Then make the sheet check itself before I trust it:
+- Find every column by its header, in any order. If a tab&#x27;s header row is missing or wrong,
+  check nothing on that tab and say which tab.
+- Count in public: packages in = checked + set aside + refused, every time.
+- Add up the extra money twice, two different ways, and compare to the cent.
+- If any of that fails, or more than 10% of the rows are refused, write
+  DO NOT TRUST THESE WEIGHTS across the top of the report, in red, and leave it there.
+- For each package billed above its weight, name the largest box from my list that is smaller
+  than the one I used and would not be billed above that package&#x27;s weight. Say it cannot know
+  whether the candles fit.
+</pre></main></body></html>
